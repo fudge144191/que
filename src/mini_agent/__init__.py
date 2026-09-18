@@ -23,6 +23,7 @@ from .permissions import (
     DenyAll,
     WhitelistPolicy,
 )
+from .session import SessionError, SessionRecord, SessionStore
 from .tools import ToolRegistry, build_default_tools
 from .trace import ConsoleTracer, render_event, render_trace
 from .validation import matches_type, type_name, validate_arguments, validate_instance
@@ -46,6 +47,9 @@ __all__ = [
     "PermissionPolicy",
     "RunResult",
     "RunStatus",
+    "SessionError",
+    "SessionRecord",
+    "SessionStore",
     "Tool",
     "ToolCall",
     "ToolRegistry",

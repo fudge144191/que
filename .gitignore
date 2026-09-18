@@ -28,3 +28,6 @@ Thumbs.db
 
 # Agent demo output
 workspace/report.md
+
+# Saved sessions
+.sessions/
