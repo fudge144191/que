@@ -39,6 +39,8 @@
 | 错误不抛出、一律回灌 | `agent.py:178/184/191/232/234` —— 未知工具、参数非法、权限拒绝、`TypeError`、任意异常，五种失败全是 `Error: ...` 字符串 |
 | 只读并行、写操作串行 | `agent.py:204` `if self.parallel_tools and len(read_only) > 1` → `ThreadPoolExecutor`；`agent.py:215` 副作用调用保持顺序串行 |
 | 超长输出截断 | `agent.py:237` `_clip()`，默认 `max_tool_chars=8000`，附带 `[truncated N chars]` 让模型知道被截了 |
+| 上下文压缩 | `context.py` `compact_messages()`，每轮调用模型前由 `agent.py` `_compact()` 触发，默认 `max_context_chars=20000` |
+| 会话持久化 | `session.py` `SessionStore`；`run(query, history=...)` 由调用方决定是否喂回历史 |
 | 沙箱隔离 | `tools/filesystem.py` 的 `_sandbox()`：`expanduser` → `resolve()` → 判断是否等于 root 或在 root 之下 |
 | 权限询问 | `permissions.py:86` `AskUserPolicy`，`y/n/a` 三态，`a` 记住本次会话；读写用注入的 callable，测试可替换 |
 | 参数校验 | `validation.py:63` `validate_instance()`，最多返回 8 条错误（`_MAX_ERRORS`）避免刷屏 |
@@ -84,13 +86,19 @@ A：不用 `eval`。`ast.parse(mode="eval")` 后走白名单递归：只放行�
 ### C. 关于工程性
 
 **Q：怎么测试一个"模型"驱动的循环？**
-A：把模型换成 `FakeModel`：它按脚本回放回复，`Agent` 只依赖 `ModelClient` 协议。于是每一步都确定，测试断言的是**消息历史的形状**——assistant 的 `tool_calls`、tool 消息的 `tool_call_id` 一一对应，而不是断言模型"说得好不好"。`$ python -m pytest -q` → 24 passed / 1 skipped。题目点名的六类异常——不存在的工具、错误参数、工具执行失败、权限拒绝、步数超限、模型请求异常——每一类都有对应用例（`tests/test_agent_behaviour.py`、`tests/test_tools.py`）。
+A：把模型换成 `FakeModel`：它按脚本回放回复，`Agent` 只依赖 `ModelClient` 协议。于是每一步都确定，测试断言的是**消息历史的形状**——assistant 的 `tool_calls`、tool 消息的 `tool_call_id` 一一对应，而不是断言模型"说得好不好"。`$ python -m pytest -q` → 35 passed / 1 skipped。题目点名的六类异常——不存在的工具、错误参数、工具执行失败、权限拒绝、步数超限、模型请求异常——每一类都有对应用例（`tests/test_agent_behaviour.py`、`tests/test_tools.py`）。
 
 **Q：那条 skip 的用例是什么？**
 A：符号链接越界测试。Windows 上创建符号链接需要管理员或开发者模式，无权创建时 `pytest.skip`。隔离逻辑本身依赖 `resolve()`，Linux/macOS 上能正常断言——**主动跳过比假装通过诚实**。
 
 **Q：没用框架是为什么？**
 A：题目就是要求手写 Loop，而且这个规模下框架是负担：LangChain 之类的抽象会把我最想展示的部分（五道关、停止条件、回灌）藏起来。代价是流式输出、重试退避、token 计费这些我没做，真上生产会补。
+
+**Q：对话越来越长、快撑爆上下文怎么办？**
+A：两层。一是单次工具结果硬截断（`max_tool_chars`）；二是每轮调模型前 `compact_messages()` 估算历史体积，超预算就把较早消息的正文压成「前 80 字 + `[compacted N chars]`」。**只缩短正文、绝不删消息**——OpenAI 风格要求 tool 消息必须和请求它的 `tool_calls` 配对，删掉任何一条，下一次请求会被厂商直接拒绝。system 和最近 6 轮始终原样保留。它是尽力而为：一个超大工具结果仍可能让总量高于预算，所以两层必须同时存在。
+
+**Q：会话怎么跨进程继续？为什么要设计成 Agent 无状态？**
+A：`SessionStore` 把消息历史按会话 ID 存成 JSON，`--session demo` 存在即续接、结束即存回。历史由调用方通过 `run(query, history=...)` 喂回，**Agent 自己不碰文件系统**——这样测试完全不需要真实磁盘，也能随时换成数据库/Redis。两个安全细节：会话 ID 过白名单正则，`../escape`、`a/b` 直接拒绝（路径穿越）；文件损坏抛 `SessionError`，由 CLI 转成错误码而不是崩在解析处。
 
 **Q：并行执行会不会导致状态不一致？**
 A：只对 `consequential=False` 的只读工具并行，`consequential=True` 的写操作刻意保持串行且按模型请求顺序执行。牺牲吞吐换可预期的状态变更——**正确性优先于速度**。
@@ -114,13 +122,13 @@ A：三步，Loop 零改动：
 
 1. 符号链接用例在部分 Windows 上跳过 → 换 Linux/macOS 或用 `pytest.mark.skipif` 之外的方案跑 CI。
 2. 写操作串行 → 可以引入按资源（路径）加锁来安全并行。
-3. 只做了工具输出截断，没做历史压缩/摘要 → 长会话仍可能逼近窗口，下一步做"超 N 轮就把早期工具结果折叠成摘要"。
+3. 上下文压缩是"尽力而为"且是截断式摘要：system 与最近若干轮受保护，单次超大工具结果仍可能超预算；更进一步的做法是调用模型生成语义摘要，代价是额外的 token 与延迟。
 4. 真实模型只支持 OpenAI 兼容的 Chat Completions，无流式、无重试退避、无 token 预算与费用统计 → 生产补齐。
 5. 计算器只支持算术子集（AST 白名单，仅 `abs/min/max/round/pow/sum/len`），不支持变量与科学函数。
-6. 没有会话持久化，每次 `run()` 是一次性会话 → 把 `messages` 落盘 + 会话 ID 即可。
+6. 会话只存消息历史，不存工具集快照与权限决策；会话文件不加密 → 恢复后工具集以当前代码为准，含敏感内容需额外处理。
 7. 路径隔离只覆盖文件系统工具；一旦加入 shell/网络工具，沙箱边界要重新设计（见上一节 HTTP 工具）。
 
-被问"如果继续做，你下一个做什么"：**历史压缩**。它是长任务的真实瓶颈，而且实现路径清晰（按 token 预算折叠早期 tool 消息）。
+被问"如果继续做，你下一个做什么"：**Todo / Planning 能力**。多步任务里模型最容易"忘了还要做什么"，做法是加一个 `todo_write` 只读状态工具 + 把当前待办清单插进每轮上下文；它和已有的压缩天然配合——待办属于必须保留的那一类，不该被压掉。
 
 ---
 
@@ -138,6 +146,10 @@ PYTHONPATH=src python -m mini_agent.cli \
 # 3) 错误自愈：参数漏了，模型看到错误后自己改对
 PYTHONPATH=src python -m mini_agent.cli "读一下 materials。" --root workspace \
   --model-backend script --script examples/retry_replies.json --trust-all
+
+# 4) 会话持久化：第二次带上 --session 会先续接（打印 resumed ...），再存回
+PYTHONPATH=src python -m mini_agent.cli "继续，把结论再压缩成一句话。" --root workspace \
+  --model-backend script --script examples/retry_replies.json --session demo --trust-all
 ```
 
 演示时值得口头点出来的三个瞬间：
