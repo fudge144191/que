@@ -58,7 +58,8 @@ def build_filesystem_tools(root: str | Path) -> list[Tool]:
         if not entries:
             return "(empty directory)"
         lines = [
-            f"{'d' if entry.is_dir() else 'f'} {entry.relative_to(base).as_posix()}"
+            f"[{'dir' if entry.is_dir() else 'file'}] "
+            f"{entry.relative_to(base).as_posix()}"
             for entry in entries
         ]
         return "\n".join(lines)
@@ -98,7 +99,10 @@ def build_filesystem_tools(root: str | Path) -> list[Tool]:
         ),
         Tool(
             name="list_dir",
-            description="List entries of a directory inside the workspace.",
+            description=(
+                "List entries of a directory inside the workspace. "
+                "Each line is '[dir] name' or '[file] name'."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
