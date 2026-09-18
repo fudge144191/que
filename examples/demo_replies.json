@@ -1,0 +1,30 @@
+[
+  {
+    "content": "先看看 materials 目录里有什么。",
+    "tool_calls": [{"id": "c1", "name": "list_dir", "arguments": {"path": "."}}]
+  },
+  {
+    "content": "搜索与 Agent Loop 有关的内容。",
+    "tool_calls": [{"id": "c2", "name": "search_text", "arguments": {"pattern": "Agent Loop"}}]
+  },
+  {
+    "content": "读取正文确认细节。",
+    "tool_calls": [
+      {"id": "c3", "name": "read_file", "arguments": {"path": "materials/intro.txt"}}
+    ]
+  },
+  {
+    "content": "把总结写入报告。",
+    "tool_calls": [
+      {
+        "id": "c4",
+        "name": "write_file",
+        "arguments": {
+          "path": "report.md",
+          "content": "# Agent Loop 总结\n\n- Agent Loop 让模型、工具与工具结果形成闭环。\n- Harness 负责执行、权限和生命周期，模型负责选择下一步行动。\n"
+        }
+      }
+    ]
+  },
+  {"content": "已根据 materials/intro.txt 生成 workspace/report.md。"}
+]
