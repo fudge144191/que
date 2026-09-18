@@ -1,6 +1,7 @@
 """Shared interfaces for the Mini Agent admission task."""
 
 from .agent import Agent
+from .context import compact_messages, estimate_chars
 from .contracts import (
     ModelClient,
     ModelReply,
@@ -32,9 +33,11 @@ __all__ = [
     "AskUserPolicy",
     "BasePolicy",
     "CallbackPolicy",
+    "compact_messages",
     "ConsequentialPolicy",
     "ConsoleTracer",
     "DenyAll",
+    "estimate_chars",
     "FakeModel",
     "ModelClient",
     "ModelReply",
