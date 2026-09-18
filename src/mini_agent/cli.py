@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 from typing import Any
 
 from .agent import Agent
 from .fake_model import FakeModel
 from .models import OpenAICompatibleModel, load_replies
 from .permissions import AllowAll, AskUserPolicy, ConsequentialPolicy
+from .session import SessionError, SessionStore
 from .tools import build_default_tools
 from .trace import ConsoleTracer, render_trace
 
@@ -19,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="mini-agent",
         description="Run one Mini Agent turn against the workspace.",
     )
-    parser.add_argument("query", help="The user question to answer.")
+    # Optional: `--list-sessions` is a valid standalone invocation.
+    parser.add_argument("query", nargs="?", help="The user question to answer.")
     parser.add_argument(
         "--root",
         default=".",
@@ -40,6 +43,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-messages",
         action="store_true",
         help="Print the final provider-neutral message history.",
+    )
+    parser.add_argument(
+        "--max-context-chars",
+        type=int,
+        default=20_000,
+        help="Compact older messages past this budget; 0 disables (default: 20000).",
+    )
+
+    session = parser.add_argument_group("session")
+    session.add_argument(
+        "--session",
+        default=None,
+        metavar="ID",
+        help="Resume this session if it exists, then save the new history to it.",
+    )
+    session.add_argument(
+        "--sessions-dir",
+        default=".sessions",
+        help="Where session files live (default: .sessions).",
+    )
+    session.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List saved sessions and exit.",
     )
 
     model = parser.add_argument_group("model")
@@ -90,7 +117,25 @@ SYSTEM_PROMPT = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not args.list_sessions and not args.query:
+        parser.error("a query is required unless --list-sessions is used")
+
+    store = SessionStore(args.sessions_dir)
+    if args.list_sessions:
+        records = store.list()
+        if not records:
+            print(f"(no saved sessions in {store.directory})")
+            return 0
+        for record in records:
+            meta = record.meta
+            print(
+                f"{record.session_id}  messages={len(record.messages)}"
+                f"  steps={meta.get('steps', '-')}  status={meta.get('status', '-')}"
+                f"  {meta.get('updated_at', '')}"
+            )
+        return 0
 
     registry = build_default_tools(args.root)
     tracer = ConsoleTracer(verbose=not args.no_trace)
@@ -109,9 +154,29 @@ def main(argv: list[str] | None = None) -> int:
         max_steps=args.max_steps,
         system_prompt=SYSTEM_PROMPT,
         tracer=tracer,
+        max_context_chars=args.max_context_chars,
     )
 
-    result = agent.run(args.query)
+    history: list[dict[str, Any]] | None = None
+    if args.session and store.exists(args.session):
+        try:
+            history = store.load(args.session)
+        except SessionError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"resumed session {args.session} ({len(history)} messages)")
+
+    result = agent.run(args.query, history=history)
+
+    if args.session:
+        path = store.save(
+            args.session,
+            result.messages,
+            status=result.status,
+            steps=result.steps,
+            root=str(Path(args.root).resolve()),
+        )
+        print(f"session saved: {path} ({len(result.messages)} messages)")
 
     print()
     if args.show_messages:
