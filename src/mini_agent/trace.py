@@ -18,6 +18,8 @@ _SYMBOL = {
     "validation_error": "invalid",
     "permission_denied": "denied",
     "tool_error": "error",
+    "model_error": "model-error",
+    "context_compacted": "compact",
     "finish": "done",
 }
 

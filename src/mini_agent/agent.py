@@ -18,6 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from .context import compact_messages
 from .contracts import (
     ModelClient,
     PermissionPolicy,
@@ -68,6 +69,8 @@ class Agent:
         parallel_tools: bool = True,
         max_workers: int = 4,
         max_tool_chars: int = 8000,
+        max_context_chars: int = 20_000,
+        compact_keep_recent: int = 6,
     ) -> None:
         self.model = model
         self.tools = tools_from_iterable(tools)
@@ -79,12 +82,24 @@ class Agent:
         self.parallel_tools = parallel_tools
         self.max_workers = max_workers
         self.max_tool_chars = max_tool_chars
+        self.max_context_chars = max_context_chars
+        self.compact_keep_recent = compact_keep_recent
 
-    def run(self, query: str) -> RunResult:
-        """Run one user turn to completion."""
-        messages: list[dict[str, Any]] = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+    def run(
+        self,
+        query: str,
+        history: list[dict[str, Any]] | None = None,
+    ) -> RunResult:
+        """Run one user turn to completion.
+
+        ``history`` is an optional message list restored from a previous run, so
+        a session can continue across processes while the Agent stays stateless.
+        """
+        messages: list[dict[str, Any]] = [dict(m) for m in history or []]
+        if self.system_prompt and not any(
+            message.get("role") == "system" for message in messages
+        ):
+            messages.insert(0, {"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": query})
 
         specs = self.registry.specs()
@@ -95,6 +110,7 @@ class Agent:
         status: RunStatus = "max_steps"
 
         while steps < self.max_steps:
+            self._compact(messages, step=steps)
             try:
                 reply = self.model.complete(
                     messages=deepcopy(messages), tools=deepcopy(specs)
@@ -137,6 +153,20 @@ class Agent:
             }
         )
         return RunResult(status, output, messages, steps)
+
+    def _compact(self, messages: list[dict[str, Any]], step: int) -> None:
+        """Shrink old message bodies once the history outgrows its budget."""
+        removed = compact_messages(
+            messages, self.max_context_chars, keep_recent=self.compact_keep_recent
+        )
+        if removed:
+            self._emit(
+                {
+                    "type": "context_compacted",
+                    "content": f"compacted {removed} chars",
+                    "step": step,
+                }
+            )
 
     # -- one reply's worth of tool calls ------------------------------------
 
